@@ -1,8 +1,8 @@
 [app]
 
 title = Pro Scalping Mexc
-package.name = mexcmobilescalper
-package.domain = com.mexcscalper
+package.name = proscalpingmexc
+package.domain = com.proscalpingmexc
 
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,json,txt,ttf
