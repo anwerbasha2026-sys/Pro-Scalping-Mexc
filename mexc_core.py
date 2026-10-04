@@ -7,14 +7,20 @@ import urllib.parse
 import time
 
 BASE_URL = "https://api.mexc.com/api/v3"
-SETTINGS_FILE = "settings.json"
+
+# توحيد المسار المطلق لملف الإعدادات بين التطبيق الرئيسي والخدمة الخلفية
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 
 # --- إدارة الإعدادات ---
 def save_setting(key, value):
     settings = load_all_settings()
     settings[key] = value
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f)
+    except Exception as e:
+        print(f"Error saving settings: {e}")
 
 def get_setting(key, default_value=None):
     settings = load_all_settings()
@@ -28,6 +34,8 @@ def load_all_settings():
             return json.load(f)
     except:
         return {}
+
+
 
 def _request_json(method, url, timeout=8):
     try:
