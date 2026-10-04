@@ -12,13 +12,17 @@ from kivy.metrics import dp
 
 from mexc_core import save_setting, get_setting
 
+# اسم فئة الجافا للخدمة استناداً إلى buildozer.spec
+SERVICE_CLASS_NAME = "com.proscalpingmexc.proscalpingmexc.ServiceScanner"
+
 class TradingBotUI(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', padding=dp(10), spacing=dp(8), **kwargs)
         self.build_ui()
         self.load_settings()
-        # مؤقت زمني لتحديث الشاشة بحالة الفحص كل 0.8 ثانية
-        Clock.schedule_interval(self.update_live_status, 0.8)
+        
+        # مؤقت لتحديث واجهة المستخدم بالنتائج الحية من الخدمة كل ثانية
+        Clock.schedule_interval(self.update_live_status, 1.0)
 
     def build_ui(self):
         cfg_grid = GridLayout(cols=2, spacing=dp(5), size_hint_y=None, height=dp(250))
@@ -32,11 +36,11 @@ class TradingBotUI(BoxLayout):
         cfg_grid.add_widget(self.secret_key)
 
         cfg_grid.add_widget(Label(text="Scan Limit (Top Coins):"))
-        self.scan_limit = TextInput(text="200", multiline=False, input_filter="int")
+        self.scan_limit = TextInput(text="100", multiline=False, input_filter="int")
         cfg_grid.add_widget(self.scan_limit)
 
         cfg_grid.add_widget(Label(text="Trade Amount ($):"))
-        self.amount = TextInput(text="79", multiline=False, input_filter="float")
+        self.amount = TextInput(text="20", multiline=False, input_filter="float")
         cfg_grid.add_widget(self.amount)
 
         cfg_grid.add_widget(Label(text="Trail Activation %:"))
@@ -86,19 +90,15 @@ class TradingBotUI(BoxLayout):
         self.manual_close_btn.bind(on_press=self.close_position_manual)
         self.add_widget(self.manual_close_btn)
 
-        # تسمية حالة الفحص المباشرة
+        # نص حالة الفحص المباشر
         self.log_label = Label(
-            text="Live Scan Status: Initializing...", 
+            text="Live Status: Ready", 
             size_hint_y=1,
             halign="center",
             valign="middle"
         )
         self.log_label.bind(size=self.log_label.setter('text_size'))
         self.add_widget(self.log_label)
-
-    def update_live_status(self, dt):
-        status = get_setting("last_scan_status", "Waiting for scanner...")
-        self.log_label.text = f"Live Status:\n{status}"
 
     def save_ui_settings(self):
         save_setting("api_key", self.api_key.text.strip())
@@ -114,49 +114,59 @@ class TradingBotUI(BoxLayout):
     def load_settings(self):
         self.api_key.text = str(get_setting("api_key", ""))
         self.secret_key.text = str(get_setting("secret_key", ""))
-        self.scan_limit.text = str(get_setting("scan_limit", "200"))
-        self.amount.text = str(get_setting("amount", "79"))
+        self.scan_limit.text = str(get_setting("scan_limit", "100"))
+        self.amount.text = str(get_setting("amount", "20"))
         self.trail_act.text = str(get_setting("trail_activation", "1.0"))
         self.trail_cb.text = str(get_setting("trail_callback", "0.4"))
         self.ui_use_rsi.active = str(get_setting("use_rsi", "1")) == "1"
         self.ui_use_macd.active = str(get_setting("use_macd", "0")) == "1"
         self.ui_use_volume.active = str(get_setting("use_volume", "1")) == "1"
 
+    def update_live_status(self, dt):
+        status = get_setting("last_scan_status", "Ready...")
+        self.log_label.text = f"Live Status:\n{status}"
+
     def start_scan(self, instance):
         self.save_ui_settings()
         save_setting("bot_active", "1")
-        
+        save_setting("last_scan_status", "Starting Foreground Scan Service...")
+
         if platform == 'android':
             try:
                 from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
-                PythonService = autoclass('org.kivy.android.PythonService')
-                
+                ServiceScanner = autoclass(SERVICE_CLASS_NAME)
+
                 activity = PythonActivity.mActivity
-                intent = Intent(activity, PythonService)
-                intent.putExtra('python.service.argument', 'service.py')
-                activity.startService(intent)
+                intent = Intent(activity, ServiceScanner)
+
+                # تشغيل الخدمة الأمامية لضمان استمراريتها
+                activity.startForegroundService(intent)
+                save_setting("last_scan_status", "Foreground Service Started Successfully.")
             except Exception as e:
-                save_setting("last_scan_status", f"Error starting service: {e}")
+                save_setting("last_scan_status", f"Service Start Error:\n{e}")
         else:
-            save_setting("last_scan_status", "Started scanning on Desktop...")
+            save_setting("last_scan_status", "Desktop Mode: Save done. Run service.py manually or via Thread.")
 
     def stop_scan(self, instance):
         save_setting("bot_active", "0")
-        save_setting("last_scan_status", "Scan Stopped by User.")
+        save_setting("last_scan_status", "Stopping Scan Service...")
+
         if platform == 'android':
             try:
                 from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
-                PythonService = autoclass('org.kivy.android.PythonService')
-                
+                ServiceScanner = autoclass(SERVICE_CLASS_NAME)
+
                 activity = PythonActivity.mActivity
-                intent = Intent(activity, PythonService)
+                intent = Intent(activity, ServiceScanner)
+
                 activity.stopService(intent)
+                save_setting("last_scan_status", "Scan Service Stopped.")
             except Exception as e:
-                print(f"Error stopping service: {e}")
+                save_setting("last_scan_status", f"Service Stop Error:\n{e}")
 
     def close_position_manual(self, instance):
         save_setting("manual_close_trigger", "1")
