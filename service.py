@@ -1,4 +1,5 @@
 import time
+import os
 import requests
 from plyer import notification
 from mexc_core import (
@@ -13,14 +14,16 @@ def send_notification(title, message):
         print(f"Notification error: {e}")
 
 def main_service_loop():
-    print("[SERVICE] Scalping Service Started...")
+    # التأكيد الفوري في الواجهة على أن الخدمة الخلفية بدأت بالفعل
+    save_setting("last_scan_status", "Service Loaded. Fetching market data...")
     active_trade = None
 
     while True:
         try:
-            if str(get_setting("bot_active", "1")) == "0":
-                save_setting("last_scan_status", "Bot is PAUSED")
-                time.sleep(3)
+            bot_active = str(get_setting("bot_active", "0"))
+            if bot_active == "0":
+                save_setting("last_scan_status", "Scan Stopped / Paused")
+                time.sleep(2)
                 continue
 
             # استجابة لإغلاق الصفقة يدوياً
@@ -32,11 +35,10 @@ def main_service_loop():
                         place_market_sell(symbol, qty)
                     send_notification("Manual Close", f"Closed active trade for {symbol} manually.")
                     active_trade = None
-                    save_setting("active_trade_symbol", "")
                 save_setting("manual_close_trigger", "0")
 
-            limit = int(get_setting("scan_limit", 200))
-            trade_amount = float(get_setting("amount", 79))
+            limit = int(get_setting("scan_limit", 100))
+            trade_amount = float(get_setting("amount", 20))
             use_rsi = str(get_setting("use_rsi", "1")) == "1"
             use_macd = str(get_setting("use_macd", "0")) == "1"
             use_volume = str(get_setting("use_volume", "1")) == "1"
@@ -44,7 +46,7 @@ def main_service_loop():
             trail_activation_pct = float(get_setting("trail_activation", "1.0"))
             trail_callback_pct = float(get_setting("trail_callback", "0.4"))
 
-            # متابعة الصفقة القائمة بالإيقاف المتحرك
+            # متابعة الصفقة القائمة
             if active_trade:
                 symbol = active_trade["symbol"]
                 entry_price = active_trade["entry_price"]
@@ -66,38 +68,45 @@ def main_service_loop():
                         if new_stop > current_stop:
                             active_trade["current_stop"] = new_stop
                     
-                    stop_msg = f"Holding {symbol} | Price: ${current_price:.5f} | Stop: ${active_trade['current_stop']:.5f}"
+                    stop_msg = f"Holding {symbol} | Price: ${current_price:.4f} | Stop: ${active_trade['current_stop']:.4f}"
                     save_setting("last_scan_status", stop_msg)
                     
                     if current_price <= active_trade["current_stop"]:
-                        msg = f"Trailing Stop hit for {symbol} at ${current_price:.5f}"
+                        msg = f"Trailing Stop hit for {symbol} at ${current_price:.4f}"
                         if qty > 0:
                             place_market_sell(symbol, qty)
-                        send_notification("Trade Closed (Trailing Stop)", msg)
+                        send_notification("Trade Closed", msg)
                         active_trade = None
-                        save_setting("active_trade_symbol", "")
                 
                 time.sleep(2)
                 continue
 
-            # فحص العملات وإرسال سبب القبول أو الرفض للواجهة
+            # جلب قائمة العملات
+            save_setting("last_scan_status", "Fetching Top Coins from MEXC...")
             symbols = get_top_symbols(limit=limit)
+            
+            if not symbols:
+                save_setting("last_scan_status", "Error: Failed to fetch symbols. Check Internet/API.")
+                time.sleep(4)
+                continue
+
+            # فحص العملات واختبار الشروط
             for symbol in symbols:
-                if str(get_setting("bot_active", "1")) == "0":
+                if str(get_setting("bot_active", "0")) == "0":
                     break
 
                 valid, price, msg = check_trade_conditions_from_main(
                     symbol, check_rsi=use_rsi, check_macd=use_macd, check_volume=use_volume
                 )
                 
-                status_text = f"[{symbol}] ${price:.4f} -> {'✅ PASS' if valid else '❌ REJECT'}: {msg}"
+                status_text = f"[{symbol}] ${price:.4f}\n{'✅ PASS' if valid else '❌ REJECT'}: {msg}"
                 save_setting("last_scan_status", status_text)
 
                 if valid:
                     order_res = place_market_buy(symbol, trade_amount)
                     bought_qty = float(order_res.get("origQty", 0)) if order_res and "origQty" in order_res else 0.0
 
-                    send_notification("New Trade Executed!", f"Bought {symbol} at ${price:.5f}")
+                    send_notification("New Trade Executed!", f"Bought {symbol} at ${price:.4f}")
                     
                     initial_sl = price * (1 - 0.015)
                     active_trade = {
@@ -107,16 +116,15 @@ def main_service_loop():
                         "current_stop": initial_sl,
                         "quantity": bought_qty
                     }
-                    save_setting("active_trade_symbol", symbol)
                     break
                     
                 time.sleep(0.3)
                 
-            time.sleep(5)
+            time.sleep(3)
             
         except Exception as e:
-            print(f"[SERVICE ERROR]: {e}")
-            time.sleep(5)
+            save_setting("last_scan_status", f"Service Loop Error:\n{str(e)}")
+            time.sleep(4)
 
 if __name__ == '__main__':
     main_service_loop()
