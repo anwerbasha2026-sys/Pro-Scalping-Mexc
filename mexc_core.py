@@ -92,7 +92,7 @@ def place_market_sell(symbol, quantity):
         "quantity": str(quantity)
     })
 
-# --- جلب البيانات والتداول ---
+# --- جلب قائمة العملات ---
 def get_supported_spot_symbols():
     try:
         res = _request_json("GET", f"{BASE_URL}/exchangeInfo", timeout=8)
@@ -142,7 +142,7 @@ def get_top_symbols(limit=200):
         print(f"Top Symbols error: {e}")
     return []
 
-# --- الحسابات الفنية ---
+# --- المؤشرات الفنية ---
 def calculate_ema(prices, period):
     if len(prices) < period:
         return None
@@ -181,15 +181,16 @@ def calculate_macd(prices):
     signal_line = macd_line * 0.9
     return macd_line, signal_line, (macd_line - signal_line)
 
+# --- فحص الشروط وإعطاء السبب الدقيق ---
 def check_trade_conditions_from_main(symbol, check_rsi=True, check_macd=False, check_volume=True):
     try:
         res = _request_json("GET", f"{BASE_URL}/klines?symbol={symbol}&interval=15m&limit=210", timeout=8)
         if not res or res.status_code != 200:
-            return False, 0.0, "API Error"
+            return False, 0.0, "API Error fetching klines"
             
         klines = _safe_json(res)
         if not isinstance(klines, list) or len(klines) < 200:
-            return False, 0.0, "Not enough data"
+            return False, 0.0, "Insufficient kline data (<200)"
 
         closes = [float(k[4]) for k in klines]
         volumes = [float(k[5]) for k in klines]
@@ -200,26 +201,37 @@ def check_trade_conditions_from_main(symbol, check_rsi=True, check_macd=False, c
         ema200 = calculate_ema(closes, 200)
         
         if not ema9 or not ema21 or not ema200:
-            return False, last_price, "EMA Calculation Failed"
+            return False, last_price, "EMA calculation error"
 
         ema9_prev = calculate_ema(closes[:-1], 9)
         ema21_prev = calculate_ema(closes[:-1], 21)
         
         has_crossover = (ema9_prev <= ema21_prev) and (ema9 > ema21)
-        
+        if not has_crossover:
+            return False, last_price, "No EMA9/EMA21 Crossover"
+            
+        if not (ema9 > ema21 > ema200):
+            return False, last_price, "EMA Trend not aligned (EMA9 > EMA21 > EMA200)"
+            
+        if last_price < ema9:
+            return False, last_price, "Price below EMA9"
+
+        # فحص حجم التداول
         avg_vol = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else 1.0
-        is_vol_ok = (volumes[-1] > (avg_vol * 1.2)) if check_volume else True
+        if check_volume and not (volumes[-1] > (avg_vol * 1.2)):
+            return False, last_price, f"Low Volume ({volumes[-1]:.0f} < avg {avg_vol*1.2:.0f})"
         
+        # فحص RSI
         rsi_now = calculate_rsi(closes, 14)
-        is_rsi_ok = (30 < rsi_now < 60) if check_rsi else True
+        if check_rsi and not (30 < rsi_now < 60):
+            return False, last_price, f"RSI out of bounds ({rsi_now:.1f})"
         
+        # فحص MACD
         m_line, s_line, hist = calculate_macd(closes)
-        is_macd_ok = (m_line > s_line and hist > 0) if check_macd else True
+        if check_macd and not (m_line > s_line and hist > 0):
+            return False, last_price, "MACD Signal not bullish"
 
-        if (has_crossover and ema9 > ema21 and ema21 > ema200 and 
-            last_price >= ema9 and is_vol_ok and is_rsi_ok and is_macd_ok):
-            return True, last_price, "Valid Signal"
+        return True, last_price, "All strategy conditions met!"
 
-        return False, last_price, "Conditions not met"
     except Exception as e:
         return False, 0.0, f"Error: {e}"

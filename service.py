@@ -18,25 +18,21 @@ def main_service_loop():
 
     while True:
         try:
-            # التحقق مما إذا كان المستخدم يطلب إيقاف البحث
             if str(get_setting("bot_active", "1")) == "0":
-                print("[SERVICE] Bot is paused by user.")
+                save_setting("last_scan_status", "Bot is PAUSED")
                 time.sleep(3)
                 continue
 
-            # 1. الاستجابة لطلب إغلاق الصفقة يدوياً من الواجهة
+            # استجابة لإغلاق الصفقة يدوياً
             if str(get_setting("manual_close_trigger", "0")) == "1":
                 if active_trade:
                     symbol = active_trade["symbol"]
                     qty = active_trade.get("quantity", 0)
-                    print(f"[MANUAL CLOSE] Closing position for {symbol}...")
-                    
                     if qty > 0:
                         place_market_sell(symbol, qty)
-                    
                     send_notification("Manual Close", f"Closed active trade for {symbol} manually.")
                     active_trade = None
-                
+                    save_setting("active_trade_symbol", "")
                 save_setting("manual_close_trigger", "0")
 
             limit = int(get_setting("scan_limit", 200))
@@ -48,7 +44,7 @@ def main_service_loop():
             trail_activation_pct = float(get_setting("trail_activation", "1.0"))
             trail_callback_pct = float(get_setting("trail_callback", "0.4"))
 
-            # 2. متابعة الصفقة المفتوحة بالإيقاف المتحرك
+            # متابعة الصفقة القائمة بالإيقاف المتحرك
             if active_trade:
                 symbol = active_trade["symbol"]
                 entry_price = active_trade["entry_price"]
@@ -70,19 +66,21 @@ def main_service_loop():
                         if new_stop > current_stop:
                             active_trade["current_stop"] = new_stop
                     
-                    # تنفيذ الخروج التلقائي مع ضرب الوقف المتحرك
+                    stop_msg = f"Holding {symbol} | Price: ${current_price:.5f} | Stop: ${active_trade['current_stop']:.5f}"
+                    save_setting("last_scan_status", stop_msg)
+                    
                     if current_price <= active_trade["current_stop"]:
                         msg = f"Trailing Stop hit for {symbol} at ${current_price:.5f}"
-                        print(f"[CLOSED] {msg}")
                         if qty > 0:
                             place_market_sell(symbol, qty)
                         send_notification("Trade Closed (Trailing Stop)", msg)
                         active_trade = None
+                        save_setting("active_trade_symbol", "")
                 
                 time.sleep(2)
                 continue
 
-            # 3. البحث عن إشارات شراء جديدة
+            # فحص العملات وإرسال سبب القبول أو الرفض للواجهة
             symbols = get_top_symbols(limit=limit)
             for symbol in symbols:
                 if str(get_setting("bot_active", "1")) == "0":
@@ -92,13 +90,12 @@ def main_service_loop():
                     symbol, check_rsi=use_rsi, check_macd=use_macd, check_volume=use_volume
                 )
                 
+                status_text = f"[{symbol}] ${price:.4f} -> {'✅ PASS' if valid else '❌ REJECT'}: {msg}"
+                save_setting("last_scan_status", status_text)
+
                 if valid:
-                    print(f"[BUY SIGNAL] Buying {symbol} at ${price}")
                     order_res = place_market_buy(symbol, trade_amount)
-                    
-                    bought_qty = 0
-                    if order_res and "origQty" in order_res:
-                        bought_qty = float(order_res.get("origQty", 0))
+                    bought_qty = float(order_res.get("origQty", 0)) if order_res and "origQty" in order_res else 0.0
 
                     send_notification("New Trade Executed!", f"Bought {symbol} at ${price:.5f}")
                     
@@ -110,11 +107,12 @@ def main_service_loop():
                         "current_stop": initial_sl,
                         "quantity": bought_qty
                     }
+                    save_setting("active_trade_symbol", symbol)
                     break
                     
                 time.sleep(0.3)
                 
-            time.sleep(8)
+            time.sleep(5)
             
         except Exception as e:
             print(f"[SERVICE ERROR]: {e}")

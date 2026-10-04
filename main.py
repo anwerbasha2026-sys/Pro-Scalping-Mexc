@@ -6,6 +6,7 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.checkbox import CheckBox
+from kivy.clock import Clock
 from kivy.utils import platform
 from kivy.metrics import dp
 
@@ -16,6 +17,8 @@ class TradingBotUI(BoxLayout):
         super().__init__(orientation='vertical', padding=dp(10), spacing=dp(8), **kwargs)
         self.build_ui()
         self.load_settings()
+        # مؤقت زمني لتحديث الشاشة بحالة الفحص كل 0.8 ثانية
+        Clock.schedule_interval(self.update_live_status, 0.8)
 
     def build_ui(self):
         cfg_grid = GridLayout(cols=2, spacing=dp(5), size_hint_y=None, height=dp(250))
@@ -64,7 +67,7 @@ class TradingBotUI(BoxLayout):
         # أزرار التشغيل والإيقاف
         btn_grid = GridLayout(cols=2, spacing=dp(5), size_hint_y=None, height=dp(50))
         
-        self.start_btn = Button(text="Start Scan / Service", background_color=(0.2, 0.8, 0.2, 1))
+        self.start_btn = Button(text="Start Scan", background_color=(0.2, 0.8, 0.2, 1))
         self.start_btn.bind(on_press=self.start_scan)
         btn_grid.add_widget(self.start_btn)
 
@@ -83,8 +86,19 @@ class TradingBotUI(BoxLayout):
         self.manual_close_btn.bind(on_press=self.close_position_manual)
         self.add_widget(self.manual_close_btn)
 
-        self.log_label = Label(text="Bot Status: Ready...", size_hint_y=1)
+        # تسمية حالة الفحص المباشرة
+        self.log_label = Label(
+            text="Live Scan Status: Initializing...", 
+            size_hint_y=1,
+            halign="center",
+            valign="middle"
+        )
+        self.log_label.bind(size=self.log_label.setter('text_size'))
         self.add_widget(self.log_label)
+
+    def update_live_status(self, dt):
+        status = get_setting("last_scan_status", "Waiting for scanner...")
+        self.log_label.text = f"Live Status:\n{status}"
 
     def save_ui_settings(self):
         save_setting("api_key", self.api_key.text.strip())
@@ -123,15 +137,14 @@ class TradingBotUI(BoxLayout):
                 intent = Intent(activity, PythonService)
                 intent.putExtra('python.service.argument', 'service.py')
                 activity.startService(intent)
-                
-                self.log_label.text = "Status: Bot & Service Running..."
             except Exception as e:
-                self.log_label.text = f"Error starting service:\n{type(e).__name__}: {str(e)}"
+                save_setting("last_scan_status", f"Error starting service: {e}")
         else:
-            self.log_label.text = "Status: Running on Desktop (Bot Active)."
+            save_setting("last_scan_status", "Started scanning on Desktop...")
 
     def stop_scan(self, instance):
         save_setting("bot_active", "0")
+        save_setting("last_scan_status", "Scan Stopped by User.")
         if platform == 'android':
             try:
                 from jnius import autoclass
@@ -144,11 +157,10 @@ class TradingBotUI(BoxLayout):
                 activity.stopService(intent)
             except Exception as e:
                 print(f"Error stopping service: {e}")
-        self.log_label.text = "Status: Scanning Stopped."
 
     def close_position_manual(self, instance):
         save_setting("manual_close_trigger", "1")
-        self.log_label.text = "Status: Sent Manual Close Signal!"
+        save_setting("last_scan_status", "Sent Manual Close Signal!")
 
 class ProScalpingMexcApp(App):
     def build(self):
