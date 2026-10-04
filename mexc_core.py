@@ -5,7 +5,6 @@ import os
 BASE_URL = "https://api.mexc.com/api/v3"
 SETTINGS_FILE = "settings.json"
 
-# --- دوال إدارة الإعدادات المشتركة بين الواجهة والخدمة ---
 def save_setting(key, value):
     settings = load_all_settings()
     settings[key] = value
@@ -37,9 +36,23 @@ def _safe_json(response):
     except:
         return {}
 
-# --- دوال فحص العملات (التي تم تعديلها) ---
+def get_supported_spot_symbols():
+    try:
+        res = _request_json("GET", f"{BASE_URL}/exchangeInfo", timeout=8)
+        if res and res.status_code == 200:
+            data = _safe_json(res)
+            symbols = set()
+            for s in data.get("symbols", []):
+                if s.get("status") == "ENABLED" and s.get("quoteAsset") == "USDT":
+                    symbols.add(s.get("symbol"))
+            return symbols
+    except:
+        pass
+    return set()
+
 def get_top_symbols(limit=200):
     try:
+        supported = get_supported_spot_symbols()
         response = _request_json("GET", f"{BASE_URL}/ticker/24hr", timeout=8)
         if response is not None and response.status_code == 200:
             data = _safe_json(response)
@@ -54,6 +67,8 @@ def get_top_symbols(limit=200):
                     continue
                 symbol = str(item.get("symbol", "")).replace("/", "").upper()
                 if not symbol.endswith("USDT"):
+                    continue
+                if supported and symbol not in supported:
                     continue
                 status = str(item.get("status", "")).upper()
                 if status and status not in {"1", "TRADING", "ENABLED", "ONLINE"}:
@@ -71,24 +86,98 @@ def get_top_symbols(limit=200):
         print(f"Top Symbols error: {e}")
     return []
 
-def check_trade_conditions_from_main(symbol, check_rsi=True, check_macd=False):
-    try:
-        # ملاحظة: ضع هنا كود جلب الشموع والمؤشرات (Kline, MACD, RSI) الخاص بك
-        # سأضع قيم افتراضية للتوضيح (يجب دمج كود المؤشرات الفني الخاص بك هنا)
-        last_closed_price = 0.500
-        rsi_now = 45.0
-        macd_now = 0.1
-        signal_now = 0.05
-        hist_now = 0.05
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return None
+    multiplier = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
+
+def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return 50.0
+    gains = []
+    losses = []
+    for i in range(1, len(prices)):
+        change = prices[i] - prices[i-1]
+        gains.append(max(0, change))
+        losses.append(max(0, -change))
+    
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
         
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(prices):
+    if len(prices) < 26:
+        return 0, 0, 0
+    ema12 = calculate_ema(prices, 12)
+    ema26 = calculate_ema(prices, 26)
+    macd_line = (ema12 or 0) - (ema26 or 0)
+    signal_line = macd_line * 0.9 # مبسط أو حساب إضافي
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+# دالة الفحص المستندة للشروط القابلة للتفعيل/الإيقاف
+def check_trade_conditions_from_main(symbol, check_rsi=True, check_macd=False, check_volume=True):
+    try:
+        res = _request_json("GET", f"{BASE_URL}/klines?symbol={symbol}&interval=15m&limit=210", timeout=8)
+        if not res or res.status_code != 200:
+            return False, 0.0, "API Error"
+            
+        klines = _safe_json(res)
+        if not isinstance(klines, list) or len(klines) < 200:
+            return False, 0.0, "Not enough kline data"
+
+        closes = [float(k[4]) for k in klines]
+        volumes = [float(k[5]) for k in klines]
+        
+        last_closed_price = closes[-1]
+        
+        ema9 = calculate_ema(closes, 9)
+        ema21 = calculate_ema(closes, 21)
+        ema200 = calculate_ema(closes, 200)
+        rsi_now = calculate_rsi(closes, 14)
+        macd_val, signal_val, hist_val = calculate_macd(closes)
+        
+        if not ema9 or not ema21 or not ema200:
+            return False, last_closed_price, "EMA calculation failed"
+
+        ema9_prev = calculate_ema(closes[:-1], 9)
+        ema21_prev = calculate_ema(closes[:-1], 21)
+        
+        has_recent_crossover = (ema9_prev <= ema21_prev) and (ema9 > ema21)
+        
+        # شرط حجم التداول (يُفعل أو يُتجاوز حسب اختيار المستخدم)
+        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else 1.0
+        is_volume_high = (volumes[-1] > (avg_volume * 1.2)) if check_volume else True
+        
+        # شرط RSI
         is_rsi_bullish = (30 < rsi_now < 60) if check_rsi else True
-        is_macd_bullish = (macd_now > signal_now and hist_now > 0) if check_macd else True
+        
+        # شرط MACD
+        is_macd_bullish = (macd_val > signal_val and hist_val > 0) if check_macd else True
 
-        # افتراض أن باقي الشروط صحيحة للتوضيح (استبدلها بشروطك الحقيقية)
-        conditions_met = is_rsi_bullish and is_macd_bullish
+        if (
+            has_recent_crossover
+            and ema9 > ema21
+            and ema21 > ema200
+            and last_closed_price >= ema9
+            and is_volume_high
+            and is_rsi_bullish
+            and is_macd_bullish
+        ):
+            return True, last_closed_price, "Signal conditions confirmed via Strategy"
 
-        if conditions_met:
-            return True, last_closed_price, "Signal conditions confirmed"
         return False, last_closed_price, "Conditions not complete"
 
     except Exception as e:
