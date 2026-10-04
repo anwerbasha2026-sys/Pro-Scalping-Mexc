@@ -71,19 +71,21 @@ class TradingBotUI(BoxLayout):
             try:
                 from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent = autoclass('android.content.Intent')
+                PythonService = autoclass('org.kivy.android.PythonService')
                 
-                # هام جداً: يجب أن يتطابق مع (package.domain) + (package.name) في buildozer
-                # في هذا المثال: org.mexc.bot
-                Service = autoclass('org.mexc.bot.ServiceScanner') 
+                activity = PythonActivity.mActivity
+                intent = Intent(activity, PythonService)
+                # تمرير اسم ملف الخدمة لكي يتم تنفيذه في الخلفية
+                intent.putExtra('python.service.argument', 'service.py')
+                activity.startService(intent)
                 
-                mActivity = PythonActivity.mActivity
-                Service.start(mActivity, 'Bot is scanning in background...')
                 self.log_label.text = "Success! Background service started."
             except Exception as e:
-                self.log_label.text = f"Error starting service:\n{e}"
+                # عرض تفاصيل الخطأ بوضوح في حال حدوث أي مشكلة أخرى
+                self.log_label.text = f"Error starting service:\n{type(e).__name__}: {str(e)}"
         else:
-            self.log_label.text = "This bot is currently optimized for Android Background Service."
-
+            self.log_label.text = "Running on desktop (Service requires Android)."
 class BotApp(App):
     def build(self):
         return TradingBotUI()
