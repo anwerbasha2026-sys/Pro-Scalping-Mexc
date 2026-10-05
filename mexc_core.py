@@ -414,9 +414,11 @@ def check_trade_conditions_from_main(
 
         ema9_series = calculate_ema_series(closes, 9)
         ema21_series = calculate_ema_series(closes, 21)
+        ema200_series = calculate_ema_series(closes, 200)
         if not ema9_series or not ema21_series:
             return False, signal_price, "EMA calculation error"
-
+        if not (ema9_series>ema21_series and ema21_series>ema200_series):
+            return False, signal_price, "not bulish"
         # 3) Bullish EMA9/EMA21 crossover may have occurred on:
         #    latest closed candle, 1 candle before, 2 candles before,
         #    or the 3rd candle before (4-candle search window).
