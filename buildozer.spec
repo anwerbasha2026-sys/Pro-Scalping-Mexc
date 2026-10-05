@@ -23,7 +23,7 @@ android.private_storage = True
 android.debug_artifact = apk
 p4a.bootstrap = sdl2
 p4a.branch = develop
-p4a.commit = d2ee8c5
+p4a.commit = 0382d27
 
 [buildozer]
 log_level = 2
