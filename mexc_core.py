@@ -416,7 +416,7 @@ def check_trade_conditions_from_main(
         if check_volume:
             baseline = volumes[-21:-1]
             avg_vol = sum(baseline) / len(baseline) if baseline else 0.0
-            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.2):
+            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.5):
                 return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.2 {avg_vol*1.2:.0f})"
 
         rsi_now = calculate_rsi(closes, 14)
