@@ -365,9 +365,21 @@ def check_trade_conditions_from_main(
 ) -> Tuple[bool, float, str]:
     """Evaluate the last CLOSED 15m candle, avoiding intrabar crossover/volume noise."""
     try:
-        klines = get_klines(symbol, "5m", 210)
-        if len(klines) < 205:
-            return False, 0.0, f"Insufficient kline data ({len(klines)})"
+        formatted_symbol = symbol.replace("/", "").upper()
+
+        if not check_ema200_trend(formatted_symbol, "5m"):
+           return False, 0.0, "5m trend not bullish1111"
+
+        if not check_ema200_trend(formatted_symbol, "15m"):
+            return False, 0.0, "15m trend not bullish"
+
+        if not check_ema200_trend(formatted_symbol, "60m"):
+            return False, 0.0, "60m trend not bullish"
+
+        klines = _get_klines(formatted_symbol, "5m", 500)
+        if not klines or len(klines) < 201:
+            return False, 0.0, "Insufficient kline data"
+       
         closes_all = [float(k[4]) for k in klines]
         volumes_all = [float(k[5]) for k in klines]
         # Ignore the currently forming candle.
@@ -404,6 +416,26 @@ def check_trade_conditions_from_main(
         macd_line, signal_line, hist = calculate_macd(closes)
         if check_macd and not (macd_line > signal_line and hist > 0):
             return False, signal_price, "MACD signal not bullish"
+        has_recent_crossover = False
+        for offset in range(1, 3):
+            idx = len(closes) - offset
+            prev_idx = idx - 1
+
+            ema9_prev = _ema_value_at_candle(ema9_series, 9, prev_idx)
+            ema21_prev = _ema_value_at_candle(ema21_series, 21, prev_idx)
+            ema9_now = _ema_value_at_candle(ema9_series, 9, idx)
+            ema21_now = _ema_value_at_candle(ema21_series, 21, idx)
+
+            if None in (ema9_prev, ema21_prev, ema9_now, ema21_now):
+                continue
+
+            if ema9_prev <= ema21_prev and ema9_now > ema21_now:
+                has_recent_crossover = True
+                break
+        if has_recent_crossover==False:
+           return False, signal_price, "No EMA9/EMA21 bullish crossover on closed candle"
+
+            
 
         return True, signal_price, "All strategy conditions met"
     except Exception as exc:
