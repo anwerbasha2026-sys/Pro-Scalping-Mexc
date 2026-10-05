@@ -356,6 +356,16 @@ def calculate_macd(prices: Iterable[float]) -> Tuple[float, float, float]:
     signal_line = signal_series[-1]
     return macd_line, signal_line, macd_line - signal_line
 
+def check_ema200_trend(formatted_symbol, interval):
+    try:
+        klines = _get_klines(formatted_symbol, interval, 500)
+        if not klines or len(klines) < 201:
+            return False
+        closes = [float(k[4]) for k in klines[:-1]]
+        ema200 = calculate_ema_series(closes, 200)
+        return bool(ema200 and closes[-1] > ema200[-1])
+    except Exception:
+        return False
 
 def check_trade_conditions_from_main(
     symbol: str,
