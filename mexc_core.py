@@ -356,16 +356,34 @@ def calculate_macd(prices: Iterable[float]) -> Tuple[float, float, float]:
     signal_line = signal_series[-1]
     return macd_line, signal_line, macd_line - signal_line
 
-def check_ema200_trend(formatted_symbol, interval):
+def check_ema200_trend(formatted_symbol: str, interval: str) -> bool:
+    """Return True when the latest CLOSED candle is above EMA200 for a timeframe."""
     try:
-        klines = _get_klines(formatted_symbol, interval, 500)
+        klines = get_klines(formatted_symbol, interval, 500)
         if not klines or len(klines) < 201:
             return False
-        closes = [float(k[4]) for k in klines[:-1]]
-        ema200 = calculate_ema_series(closes, 200)
-        return bool(ema200 and closes[-1] > ema200[-1])
+
+        closes = [float(k[4]) for k in klines[:-1]]  # ignore forming candle
+        if len(closes) < 200:
+            return False
+
+        ema200 = calculate_ema(closes, 200)
+        return bool(ema200 is not None and closes[-1] > ema200)
     except Exception:
         return False
+
+
+def _ema_value_at_candle(
+    ema_series: List[float],
+    period: int,
+    candle_index: int,
+) -> Optional[float]:
+    """Map a closed-candle index to calculate_ema_series() index."""
+    series_index = candle_index - (period - 1)
+    if series_index < 0 or series_index >= len(ema_series):
+        return None
+    return ema_series[series_index]
+
 
 def check_trade_conditions_from_main(
     symbol: str,
@@ -373,23 +391,20 @@ def check_trade_conditions_from_main(
     check_macd: bool = False,
     check_volume: bool = True,
 ) -> Tuple[bool, float, str]:
-    """Evaluate the last CLOSED 15m candle, avoiding intrabar crossover/volume noise."""
+    """Evaluate closed-candle strategy conditions for a bullish setup."""
     try:
         formatted_symbol = symbol.replace("/", "").upper()
 
-        if not check_ema200_trend(formatted_symbol, "5m"):
-           return False, 0.0, "5m trend not bullish1111"
+        # 1) Bullish EMA200 trend must be present on 1h, 15m and 5m.
+        for interval, label in (("60m", "1h"), ("15m", "15m"), ("5m", "5m")):
+            if not check_ema200_trend(formatted_symbol, interval):
+                return False, 0.0, f"{label} EMA200 trend not bullish"
 
-        if not check_ema200_trend(formatted_symbol, "15m"):
-            return False, 0.0, "15m trend not bullish"
-
-        if not check_ema200_trend(formatted_symbol, "60m"):
-            return False, 0.0, "60m trend not bullish"
-
-        klines = _get_klines(formatted_symbol, "5m", 500)
+        # 2) Strategy signal is based on CLOSED 5m candles only.
+        klines = get_klines(formatted_symbol, "5m", 500)
         if not klines or len(klines) < 201:
             return False, 0.0, "Insufficient kline data"
-       
+
         closes_all = [float(k[4]) for k in klines]
         volumes_all = [float(k[5]) for k in klines]
         # Ignore the currently forming candle.
@@ -399,42 +414,23 @@ def check_trade_conditions_from_main(
 
         ema9_series = calculate_ema_series(closes, 9)
         ema21_series = calculate_ema_series(closes, 21)
-        ema200_series = calculate_ema_series(closes, 200)
-        if len(ema9_series) < 2 or len(ema21_series) < 2 or not ema200_series:
+        if not ema9_series or not ema21_series:
             return False, signal_price, "EMA calculation error"
-        ema9_now, ema9_prev = ema9_series[-1], ema9_series[-2]
-        ema21_now, ema21_prev = ema21_series[-1], ema21_series[-2]
-        ema200_now = ema200_series[-1]
 
-        if not ((ema9_prev <= ema21_prev) and (ema9_now > ema21_now)):
-            return False, signal_price, "No EMA9/EMA21 bullish crossover on closed candle"
-        if not (ema9_now > ema21_now > ema200_now):
-            return False, signal_price, "EMA trend not aligned (EMA9 > EMA21 > EMA200)"
-        if signal_price < ema9_now:
-            return False, signal_price, "Closed price below EMA9"
-
-        if check_volume:
-            baseline = volumes[-21:-1]
-            avg_vol = sum(baseline) / len(baseline) if baseline else 0.0
-            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.5):
-                return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.2 {avg_vol*1.2:.0f})"
-
-        rsi_now = calculate_rsi(closes, 14)
-        if check_rsi and not (30 < rsi_now < 60):
-            return False, signal_price, f"RSI out of bounds ({rsi_now:.1f})"
-
-        macd_line, signal_line, hist = calculate_macd(closes)
-        if check_macd and not (macd_line > signal_line and hist > 0):
-            return False, signal_price, "MACD signal not bullish"
+        # 3) Bullish EMA9/EMA21 crossover may have occurred on:
+        #    latest closed candle, 1 candle before, 2 candles before,
+        #    or the 3rd candle before (4-candle search window).
+        recent_candles = 4
+        search_start = max(1, len(closes) - recent_candles)
         has_recent_crossover = False
-        for offset in range(1, 3):
-            idx = len(closes) - offset
-            prev_idx = idx - 1
 
-            ema9_prev = _ema_value_at_candle(ema9_series, 9, prev_idx)
-            ema21_prev = _ema_value_at_candle(ema21_series, 21, prev_idx)
-            ema9_now = _ema_value_at_candle(ema9_series, 9, idx)
-            ema21_now = _ema_value_at_candle(ema21_series, 21, idx)
+        for candle_index in range(search_start, len(closes)):
+            prev_index = candle_index - 1
+
+            ema9_prev = _ema_value_at_candle(ema9_series, 9, prev_index)
+            ema21_prev = _ema_value_at_candle(ema21_series, 21, prev_index)
+            ema9_now = _ema_value_at_candle(ema9_series, 9, candle_index)
+            ema21_now = _ema_value_at_candle(ema21_series, 21, candle_index)
 
             if None in (ema9_prev, ema21_prev, ema9_now, ema21_now):
                 continue
@@ -442,15 +438,30 @@ def check_trade_conditions_from_main(
             if ema9_prev <= ema21_prev and ema9_now > ema21_now:
                 has_recent_crossover = True
                 break
-        if has_recent_crossover==False:
-           return False, signal_price, "No EMA9/EMA21 bullish crossover on closed candle"
 
-            
+        if not has_recent_crossover:
+            return False, signal_price, "No EMA9/EMA21 bullish crossover in last 4 closed candles"
+
+        # 4) KEEP the existing volume condition unchanged.
+        if check_volume:
+            baseline = volumes[-21:-1]
+            avg_vol = sum(baseline) / len(baseline) if baseline else 0.0
+            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.5):
+                return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.2 {avg_vol*1.2:.0f})"
+
+        # 5) KEEP RSI condition unchanged.
+        rsi_now = calculate_rsi(closes, 14)
+        if check_rsi and not (30 < rsi_now < 60):
+            return False, signal_price, f"RSI out of bounds ({rsi_now:.1f})"
+
+        # 6) KEEP MACD condition unchanged.
+        macd_line, signal_line, hist = calculate_macd(closes)
+        if check_macd and not (macd_line > signal_line and hist > 0):
+            return False, signal_price, "MACD signal not bullish"
 
         return True, signal_price, "All strategy conditions met"
     except Exception as exc:
         return False, 0.0, f"Error: {exc}"
-
 
 def get_account_info() -> Dict[str, Any]:
     return _signed_request("GET", "/account")
