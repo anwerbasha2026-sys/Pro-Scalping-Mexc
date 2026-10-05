@@ -1,21 +1,37 @@
-import time
 import os
-import requests
-from plyer import notification
-from mexc_core import (
-    get_top_symbols, check_trade_conditions_from_main, 
-    get_setting, save_setting, place_market_buy, place_market_sell
-)
+import sys
+import time
 
-def send_notification(title, message):
+# 1. حل مشكلة مسار الاستيراد في أندرويد لضمان العثور على mexc_core.py
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
+# 2. محاولة استيراد الدوال مع اصتياد أخطاء الاستيراد
+try:
+    from mexc_core import (
+        get_top_symbols, check_trade_conditions_from_main, 
+        get_setting, save_setting, place_market_buy, place_market_sell
+    )
+except Exception as import_err:
+    # كتابة الخطأ في ملف الإعدادات ليظهر بالواجهة فوراً
     try:
-        notification.notify(title=title, message=message, app_name='Pro Scalping Mexc', timeout=10)
-    except Exception as e:
-        print(f"Notification error: {e}")
+        import json
+        settings_path = os.path.join(CURRENT_DIR, "settings.json")
+        data = {}
+        if os.path.exists(settings_path):
+            with open(settings_path, "r") as f:
+                data = json.load(f)
+        data["last_scan_status"] = f"Import Error in service.py:\n{import_err}"
+        with open(settings_path, "w") as f:
+            json.dump(data, f)
+    except:
+        pass
+    sys.exit(1)
 
 def main_service_loop():
-    # التأكيد الفوري في الواجهة على أن الخدمة الخلفية بدأت بالفعل
-    save_setting("last_scan_status", "Service Loaded. Fetching market data...")
+    # تحديث الواجهة فور بدء الخدمة الفعلية
+    save_setting("last_scan_status", "Service Core Loaded. Starting scan loop...")
     active_trade = None
 
     while True:
@@ -26,67 +42,53 @@ def main_service_loop():
                 time.sleep(2)
                 continue
 
-            # استجابة لإغلاق الصفقة يدوياً
-            if str(get_setting("manual_close_trigger", "0")) == "1":
-                if active_trade:
-                    symbol = active_trade["symbol"]
-                    qty = active_trade.get("quantity", 0)
-                    if qty > 0:
-                        place_market_sell(symbol, qty)
-                    send_notification("Manual Close", f"Closed active trade for {symbol} manually.")
-                    active_trade = None
-                save_setting("manual_close_trigger", "0")
-
             limit = int(get_setting("scan_limit", 100))
             trade_amount = float(get_setting("amount", 20))
             use_rsi = str(get_setting("use_rsi", "1")) == "1"
             use_macd = str(get_setting("use_macd", "0")) == "1"
             use_volume = str(get_setting("use_volume", "1")) == "1"
-            
-            trail_activation_pct = float(get_setting("trail_activation", "1.0"))
-            trail_callback_pct = float(get_setting("trail_callback", "0.4"))
+            trail_act_pct = float(get_setting("trail_activation", "1.0"))
+            trail_cb_pct = float(get_setting("trail_callback", "0.4"))
 
-            # متابعة الصفقة القائمة
+            # متابعة الصفقة إن وجدت
             if active_trade:
                 symbol = active_trade["symbol"]
-                entry_price = active_trade["entry_price"]
-                peak_price = active_trade["peak_price"]
-                current_stop = active_trade["current_stop"]
+                entry_p = active_trade["entry_price"]
+                peak_p = active_trade["peak_price"]
+                stop_p = active_trade["current_stop"]
                 qty = active_trade.get("quantity", 0)
-                
+
+                import requests
                 res = requests.get(f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}", timeout=5)
                 if res.status_code == 200:
-                    current_price = float(res.json().get("price", entry_price))
-                    
-                    if current_price > peak_price:
-                        active_trade["peak_price"] = current_price
-                        peak_price = current_price
-                    
-                    profit_pct = ((peak_price - entry_price) / entry_price) * 100
-                    if profit_pct >= trail_activation_pct:
-                        new_stop = peak_price * (1 - (trail_callback_pct / 100.0))
-                        if new_stop > current_stop:
+                    curr_p = float(res.json().get("price", entry_p))
+                    if curr_p > peak_p:
+                        active_trade["peak_price"] = curr_p
+                        peak_p = curr_p
+
+                    profit_pct = ((peak_p - entry_p) / entry_p) * 100
+                    if profit_pct >= trail_act_pct:
+                        new_stop = peak_p * (1 - (trail_cb_pct / 100.0))
+                        if new_stop > stop_p:
                             active_trade["current_stop"] = new_stop
-                    
-                    stop_msg = f"Holding {symbol} | Price: ${current_price:.4f} | Stop: ${active_trade['current_stop']:.4f}"
-                    save_setting("last_scan_status", stop_msg)
-                    
-                    if current_price <= active_trade["current_stop"]:
-                        msg = f"Trailing Stop hit for {symbol} at ${current_price:.4f}"
+
+                    save_setting("last_scan_status", f"Holding {symbol} | Price: ${curr_p:.4f} | SL: ${active_trade['current_stop']:.4f}")
+
+                    if curr_p <= active_trade["current_stop"]:
                         if qty > 0:
                             place_market_sell(symbol, qty)
-                        send_notification("Trade Closed", msg)
                         active_trade = None
-                
+                        save_setting("last_scan_status", f"Closed {symbol} via Trailing Stop.")
+
                 time.sleep(2)
                 continue
 
-            # جلب قائمة العملات
-            save_setting("last_scan_status", "Fetching Top Coins from MEXC...")
+            # جلب العملات
+            save_setting("last_scan_status", "Fetching top coins from MEXC...")
             symbols = get_top_symbols(limit=limit)
-            
+
             if not symbols:
-                save_setting("last_scan_status", "Error: Failed to fetch symbols. Check Internet/API.")
+                save_setting("last_scan_status", "Error: Symbol list is empty. Check internet connection.")
                 time.sleep(4)
                 continue
 
@@ -98,16 +100,15 @@ def main_service_loop():
                 valid, price, msg = check_trade_conditions_from_main(
                     symbol, check_rsi=use_rsi, check_macd=use_macd, check_volume=use_volume
                 )
-                
-                status_text = f"[{symbol}] ${price:.4f}\n{'✅ PASS' if valid else '❌ REJECT'}: {msg}"
+
+                # تحديث اسم العملة المفحوصة فوراً على واجهة التطبيق
+                status_text = f"Scanning: [{symbol}]\nPrice: ${price:.4f}\nStatus: {'✅ PASS' if valid else '❌ ' + msg}"
                 save_setting("last_scan_status", status_text)
 
                 if valid:
                     order_res = place_market_buy(symbol, trade_amount)
                     bought_qty = float(order_res.get("origQty", 0)) if order_res and "origQty" in order_res else 0.0
 
-                    send_notification("New Trade Executed!", f"Bought {symbol} at ${price:.4f}")
-                    
                     initial_sl = price * (1 - 0.015)
                     active_trade = {
                         "symbol": symbol,
@@ -116,15 +117,20 @@ def main_service_loop():
                         "current_stop": initial_sl,
                         "quantity": bought_qty
                     }
+                    save_setting("last_scan_status", f"✅ Trade Entered: {symbol} at ${price:.4f}")
                     break
-                    
+
                 time.sleep(0.3)
-                
-            time.sleep(3)
-            
-        except Exception as e:
-            save_setting("last_scan_status", f"Service Loop Error:\n{str(e)}")
+
+            time.sleep(2)
+
+        except Exception as loop_e:
+            save_setting("last_scan_status", f"Service Loop Error:\n{loop_e}")
             time.sleep(4)
 
 if __name__ == '__main__':
-    main_service_loop()
+    try:
+        main_service_loop()
+    except Exception as main_e:
+        from mexc_core import save_setting
+        save_setting("last_scan_status", f"Fatal Service Crash:\n{main_e}")
