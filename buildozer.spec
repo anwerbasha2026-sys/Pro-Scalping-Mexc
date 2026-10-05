@@ -22,6 +22,8 @@ android.accept_sdk_license = True
 android.private_storage = True
 android.debug_artifact = apk
 p4a.bootstrap = sdl2
+p4a.branch = develop
+p4a.commit = d2ee8c5
 
 [buildozer]
 log_level = 2
