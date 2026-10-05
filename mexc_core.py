@@ -365,7 +365,7 @@ def check_trade_conditions_from_main(
 ) -> Tuple[bool, float, str]:
     """Evaluate the last CLOSED 15m candle, avoiding intrabar crossover/volume noise."""
     try:
-        klines = get_klines(symbol, "15m", 210)
+        klines = get_klines(symbol, "5m", 210)
         if len(klines) < 205:
             return False, 0.0, f"Insufficient kline data ({len(klines)})"
         closes_all = [float(k[4]) for k in klines]
