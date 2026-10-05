@@ -6,6 +6,11 @@ on:
     branches:
       - main
 
+concurrency:
+  group: android-apk-build
+  cancel-in-progress: true
+
+
 jobs:
   build:
     name: Build Pro Scalping Mexc - ONN 100071481A
