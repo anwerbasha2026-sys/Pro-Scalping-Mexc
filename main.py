@@ -221,11 +221,9 @@ class TradingBotUI(BoxLayout):
             try:
                 from jnius import autoclass
                 PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                Intent = autoclass("android.content.Intent")
                 ServiceScanner = autoclass(SERVICE_CLASS_NAME)
                 activity = PythonActivity.mActivity
-                intent = Intent(activity, ServiceScanner)
-                activity.startForegroundService(intent)
+                ServiceScanner.start(activity, "")
                 save_settings({"last_scan_status": "✅ Foreground scanner service started."})
             except Exception as exc:
                 save_settings({"bot_active": "0", "last_scan_status": f"❌ Service start error: {exc}"})
