@@ -14,6 +14,7 @@ if CURRENT_DIR not in sys.path:
 from mexc_core import (  # noqa: E402
     MexcAPIError,
     MexcOrderUnknownError,
+    check_1m_entry_trigger,
     check_trade_conditions_from_main,
     get_account_info,
     get_free_balance,
@@ -303,7 +304,20 @@ def main_service_loop() -> None:
                 if not valid:
                     time.sleep(0.10)
                     continue
-                active_trade = _enter_trade(symbol, price, trade_amount)
+
+                # 5m has already passed the full strategy. Use 1m only to
+                # time the actual market entry.
+                entry_ready, entry_price, entry_msg = check_1m_entry_trigger(symbol)
+                _status(
+                    f"5m setup confirmed [{symbol}]\\n"
+                    f"1m entry: {'✅ READY' if entry_ready else '⏳ WAIT'}\\n"
+                    f"Status: {entry_msg}"
+                )
+                if not entry_ready:
+                    time.sleep(0.20)
+                    continue
+
+                active_trade = _enter_trade(symbol, entry_price or price, trade_amount)
                 if active_trade:
                     break
 
