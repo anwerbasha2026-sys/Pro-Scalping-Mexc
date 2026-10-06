@@ -356,19 +356,34 @@ def calculate_macd(prices: Iterable[float]) -> Tuple[float, float, float]:
     signal_line = signal_series[-1]
     return macd_line, signal_line, macd_line - signal_line
 
+_EMA200_TREND_CACHE: Dict[Tuple[str, str], Tuple[float, bool]] = {}
+
 def check_ema200_trend(formatted_symbol: str, interval: str) -> bool:
-    """Return True when the latest CLOSED candle is above EMA200 for a timeframe."""
+    """Require price above a rising EMA200 on the requested closed timeframe."""
     try:
+        key = (formatted_symbol.upper(), interval)
+        ttl = {"60m": 120.0, "15m": 60.0, "5m": 15.0}.get(interval, 30.0)
+        cached = _EMA200_TREND_CACHE.get(key)
+        now = time.monotonic()
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+
         klines = get_klines(formatted_symbol, interval, 500)
-        if not klines or len(klines) < 201:
+        if not klines or len(klines) < 202:
+            _EMA200_TREND_CACHE[key] = (now, False)
             return False
 
-        closes = [float(k[4]) for k in klines[:-1]]  # ignore forming candle
-        if len(closes) < 200:
+        closes = [float(k[4]) for k in klines[:-1]]
+        ema200_series = calculate_ema_series(closes, 200)
+        if len(ema200_series) < 2:
+            _EMA200_TREND_CACHE[key] = (now, False)
             return False
 
-        ema200 = calculate_ema(closes, 200)
-        return bool(ema200 is not None and closes[-1] > ema200)
+        ema200_now = ema200_series[-1]
+        ema200_prev = ema200_series[-2]
+        result = closes[-1] > ema200_now and ema200_now > ema200_prev
+        _EMA200_TREND_CACHE[key] = (now, result)
+        return result
     except Exception:
         return False
 
@@ -378,7 +393,6 @@ def _ema_value_at_candle(
     period: int,
     candle_index: int,
 ) -> Optional[float]:
-    """Map a closed-candle index to calculate_ema_series() index."""
     series_index = candle_index - (period - 1)
     if series_index < 0 or series_index >= len(ema_series):
         return None
@@ -391,82 +405,110 @@ def check_trade_conditions_from_main(
     check_macd: bool = False,
     check_volume: bool = True,
 ) -> Tuple[bool, float, str]:
-    """Evaluate closed-candle strategy conditions for a bullish setup."""
+    """5m strategy gate; 1m is only used later to time the entry."""
     try:
         formatted_symbol = symbol.replace("/", "").upper()
 
-        # 1) Bullish EMA200 trend must be present on 1h, 15m and 5m.
         for interval, label in (("60m", "1h"), ("15m", "15m"), ("5m", "5m")):
             if not check_ema200_trend(formatted_symbol, interval):
                 return False, 0.0, f"{label} EMA200 trend not bullish"
 
-        # 2) Strategy signal is based on CLOSED 5m candles only.
         klines = get_klines(formatted_symbol, "5m", 500)
-        if not klines or len(klines) < 201:
-            return False, 0.0, "Insufficient kline data"
+        if not klines or len(klines) < 202:
+            return False, 0.0, "Insufficient 5m kline data"
 
         closes_all = [float(k[4]) for k in klines]
         volumes_all = [float(k[5]) for k in klines]
-        # Ignore the currently forming candle.
         closes = closes_all[:-1]
         volumes = volumes_all[:-1]
         signal_price = closes[-1]
-        
+
         ema9_series = calculate_ema_series(closes, 9)
         ema21_series = calculate_ema_series(closes, 21)
-        ema200_series = calculate_ema_series(closes, 200)
-        if not ema9_series or not ema21_series:
+        if len(ema9_series) < 2 or len(ema21_series) < 2:
             return False, signal_price, "EMA calculation error"
-        if not (ema9_series>ema21_series and ema21_series>ema200_series):
-            return False, signal_price, "not bulish"
-        if signal_price<ema9_series:
-            return False, signal_price, "not bulish"
 
-        # 3) Bullish EMA9/EMA21 crossover may have occurred on:
-        #    latest closed candle, 1 candle before, 2 candles before,
-        #    or the 3rd candle before (4-candle search window).
+        ema9_now = ema9_series[-1]
+        ema21_now = ema21_series[-1]
+        if ema9_now <= ema21_now:
+            return False, signal_price, "5m EMA9 is not above EMA21"
+
         recent_candles = 4
         search_start = max(1, len(closes) - recent_candles)
         has_recent_crossover = False
 
         for candle_index in range(search_start, len(closes)):
             prev_index = candle_index - 1
-
             ema9_prev = _ema_value_at_candle(ema9_series, 9, prev_index)
             ema21_prev = _ema_value_at_candle(ema21_series, 21, prev_index)
-            ema9_now = _ema_value_at_candle(ema9_series, 9, candle_index)
-            ema21_now = _ema_value_at_candle(ema21_series, 21, candle_index)
-
-            if None in (ema9_prev, ema21_prev, ema9_now, ema21_now):
+            ema9_at = _ema_value_at_candle(ema9_series, 9, candle_index)
+            ema21_at = _ema_value_at_candle(ema21_series, 21, candle_index)
+            if None in (ema9_prev, ema21_prev, ema9_at, ema21_at):
                 continue
-
-            if ema9_prev <= ema21_prev and ema9_now > ema21_now:
+            if ema9_prev <= ema21_prev and ema9_at > ema21_at:
                 has_recent_crossover = True
                 break
 
         if not has_recent_crossover:
-            return False, signal_price, "No EMA9/EMA21 bullish crossover in last 4 closed candles"
+            return False, signal_price, "No EMA9/EMA21 bullish crossover in last 4 closed 5m candles"
 
-        # 4) KEEP the existing volume condition unchanged.
+        if signal_price < ema9_now:
+            return False, signal_price, "5m closed price is below EMA9"
+
         if check_volume:
             baseline = volumes[-21:-1]
             avg_vol = sum(baseline) / len(baseline) if baseline else 0.0
             if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.5):
-                return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.2 {avg_vol*1.2:.0f})"
+                return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.5 {avg_vol*1.5:.0f})"
 
-        # 5) KEEP RSI condition unchanged.
         rsi_now = calculate_rsi(closes, 14)
         if check_rsi and not (30 < rsi_now < 60):
             return False, signal_price, f"RSI out of bounds ({rsi_now:.1f})"
 
-        # 6) KEEP MACD condition unchanged.
         macd_line, signal_line, hist = calculate_macd(closes)
         if check_macd and not (macd_line > signal_line and hist > 0):
             return False, signal_price, "MACD signal not bullish"
 
-        return True, signal_price, "All strategy conditions met"
+        return True, signal_price, "5m strategy passed; waiting for 1m entry trigger"
     except Exception as exc:
         return False, 0.0, f"Error: {exc}"
+
+
+def check_1m_entry_trigger(symbol: str) -> Tuple[bool, float, str]:
+    """Use 1m only to time entry after the 5m strategy has already passed."""
+    try:
+        formatted_symbol = symbol.replace("/", "").upper()
+        klines = get_klines(formatted_symbol, "1m", 60)
+        if not klines or len(klines) < 25:
+            return False, 0.0, "Insufficient 1m kline data"
+
+        closes_all = [float(k[4]) for k in klines]
+        closes = closes_all[:-1]
+        if len(closes) < 21:
+            return False, 0.0, "Insufficient closed 1m candles"
+
+        ema9_series = calculate_ema_series(closes, 9)
+        ema21_series = calculate_ema_series(closes, 21)
+        if not ema9_series or not ema21_series:
+            return False, 0.0, "1m EMA calculation error"
+
+        ema9_now = ema9_series[-1]
+        ema21_now = ema21_series[-1]
+        current_price = get_ticker_price(formatted_symbol)
+        last_closed = closes[-1]
+
+        if current_price <= 0:
+            return False, 0.0, "Invalid 1m ticker price"
+        if ema9_now <= ema21_now:
+            return False, current_price, "1m EMA9 not above EMA21"
+        if current_price <= ema9_now:
+            return False, current_price, "1m price has not reclaimed EMA9"
+        if current_price <= last_closed:
+            return False, current_price, "1m continuation not confirmed"
+
+        return True, current_price, "1m entry trigger confirmed"
+    except Exception as exc:
+        return False, 0.0, f"1m trigger error: {exc}"
 
 def get_account_info() -> Dict[str, Any]:
     return _signed_request("GET", "/account")
