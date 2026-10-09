@@ -433,7 +433,7 @@ def check_trade_conditions_from_main(
         if ema9_now <= ema21_now:
             return False, signal_price, "5m EMA9 is not above EMA21"
 
-        recent_candles = 4
+        recent_candles = 3
         search_start = max(1, len(closes) - recent_candles)
         has_recent_crossover = False
 
@@ -458,7 +458,7 @@ def check_trade_conditions_from_main(
         if check_volume:
             baseline = volumes[-21:-1]
             avg_vol = sum(baseline) / len(baseline) if baseline else 0.0
-            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.5):
+            if avg_vol <= 0 or volumes[-1] <= (avg_vol * 1.3):
                 return False, signal_price, f"Low volume ({volumes[-1]:.0f} <= avg*1.5 {avg_vol*1.5:.0f})"
 
         rsi_now = calculate_rsi(closes, 14)
